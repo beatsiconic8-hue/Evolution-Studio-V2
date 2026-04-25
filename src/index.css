@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Orbitron", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-gold: #FFD700;
+  --color-cyan: #00F5FF;
+  --color-mag: #FF00AA;
+  --color-bg: #050508;
+  --color-card: #0f0f1a;
+}
+
+@layer base {
+  body {
+    @apply bg-bg text-slate-200 font-sans;
+  }
+}
+
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@300;400;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+.glass {
+  @apply bg-card/80 backdrop-blur-xl border border-white/10;
+}
+
+.gold-glow {
+  text-shadow: 0 0 10px rgba(255, 215, 0, 0.3);
+}
+
+.cyan-glow {
+  text-shadow: 0 0 10px rgba(0, 245, 255, 0.3);
+}
