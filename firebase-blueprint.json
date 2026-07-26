@@ -1,0 +1,61 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User profile with YouTube credentials and synced details",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "channelId": { "type": "string" },
+        "channelTitle": { "type": "string" },
+        "avatar": { "type": "string" },
+        "lastSynced": { "type": "string" },
+        "channelData": { "type": "object" },
+        "videosData": { "type": "array" }
+      },
+      "required": ["uid"]
+    },
+    "HistoryItem": {
+      "title": "History Item",
+      "description": "A generated viral SEO distribution package saved in campaign history",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "url": { "type": "string" },
+        "context": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "seo": { "type": "object" }
+      },
+      "required": ["uid", "url", "context", "timestamp", "seo"]
+    },
+    "KnowledgeGraph": {
+      "title": "Knowledge Graph",
+      "description": "Creator Brand DNA and knowledge graph synthesized from YouTube statistics",
+      "type": "object",
+      "properties": {
+        "niche": { "type": "string" },
+        "toneOfVoice": { "type": "string" },
+        "keyAudiences": { "type": "array", "items": { "type": "string" } },
+        "topPerformanceFactors": { "type": "array", "items": { "type": "string" } },
+        "mainThemes": { "type": "array", "items": { "type": "string" } },
+        "recommendedHashtags": { "type": "array", "items": { "type": "string" } },
+        "suggestedHooks": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["niche", "toneOfVoice", "keyAudiences", "topPerformanceFactors", "mainThemes", "recommendedHashtags", "suggestedHooks"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Private user profiles"
+    },
+    "/history/{docId}": {
+      "schema": "HistoryItem",
+      "description": "Viral SEO generation campaign history items"
+    },
+    "/knowledge_graphs/{userId}": {
+      "schema": "KnowledgeGraph",
+      "description": "Grounded Content DNA knowledge graphs per user"
+    }
+  }
+}

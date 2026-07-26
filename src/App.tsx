@@ -25,10 +25,11 @@ import {
   Search,
   ExternalLink,
   Plus,
-  Play
+  Play,
+  ArrowRight
 } from 'lucide-react';
-import { generateViralSEO, generateKnowledgeGraph, KnowledgeGraph } from './lib/gemini';
-import { auth, db, googleProvider } from './lib/firebase';
+import { generateViralSEO, generateKnowledgeGraph, KnowledgeGraph, generateViralAudit, ViralAuditPackage, TrendDashboardData, generateTrendDashboardData, EngagementPrediction, predictVideoEngagement } from './lib/gemini';
+import { auth, db, googleProvider, handleFirestoreError, OperationType } from './lib/firebase';
 import { signInWithPopup, signOut, onAuthStateChanged, GoogleAuthProvider } from 'firebase/auth';
 import { 
   doc, 
@@ -94,6 +95,156 @@ export default function App() {
   const [vault, setVault] = useState<VaultItem[]>([]);
   const [vaultLoading, setVaultLoading] = useState(false);
 
+  // Recent uploads audit and catalyst state
+  const [recentAudits, setRecentAudits] = useState<Record<string, { loading: boolean; data?: ViralAuditPackage; error?: string }>>({});
+  const [expandedMetadataVideoId, setExpandedMetadataVideoId] = useState<string | null>(null);
+  const [expandedAuditVideoId, setExpandedAuditVideoId] = useState<string | null>(null);
+  const [expandedExplanationVideoId, setExpandedExplanationVideoId] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<Record<string, string>>({});
+
+  // Error tracking & troubleshooting state
+  const [youtubeError, setYoutubeError] = useState<string | null>(null);
+
+  // Sub-tabs for Analytics Workspace
+  const [analyticsSubTab, setAnalyticsSubTab] = useState<'audit' | 'trends' | 'engagement'>('audit');
+
+  // Trend Dashboard state
+  const [trendQuery, setTrendQuery] = useState('lofi chill music');
+  const [trendData, setTrendData] = useState<TrendDashboardData | null>(null);
+  const [trendLoading, setTrendLoading] = useState(false);
+
+  // Video Engagement tools state
+  const [candidateTitle, setCandidateTitle] = useState('');
+  const [thumbnailConcept, setThumbnailConcept] = useState('');
+  const [prediction, setPrediction] = useState<EngagementPrediction | null>(null);
+  const [predicting, setPredicting] = useState(false);
+
+  const extractCurrentHashtags = (desc: string, title: string): string => {
+    const hashRegex = /#[a-zA-Z0-9_]+/g;
+    const matches = (desc || "").match(hashRegex);
+    if (matches && matches.length > 0) {
+      return matches.slice(0, 8).join(' ');
+    }
+    const cleanTitleWords = title.toLowerCase().replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 4);
+    if (cleanTitleWords.length > 0) {
+      return cleanTitleWords.slice(0, 4).map(w => `#${w}`).join(' ');
+    }
+    return '#creator #viral #trending';
+  };
+
+  const extractCurrentKeywords = (desc: string, title: string): string => {
+    const cleanText = `${title} ${desc || ""}`.toLowerCase().replace(/[^a-zA-Z0-9\s,]/g, '');
+    const words = cleanText.split(/\s+/).filter(w => w.length > 4 && !['about', 'their', 'there', 'would', 'could', 'should', 'video', 'music', 'channel'].includes(w));
+    const uniqueWords = Array.from(new Set(words));
+    if (uniqueWords.length > 0) {
+      return uniqueWords.slice(0, 8).join(', ');
+    }
+    return 'algorithm tuning, viral catalyst, social discovery, organic growth';
+  };
+
+  const runRecentVideoAudit = async (video: YouTubeVideo) => {
+    setRecentAudits(prev => ({
+      ...prev,
+      [video.id]: { loading: true }
+    }));
+
+    try {
+      const data = await generateViralAudit(video.title, video.description || "", knowledgeGraph);
+      setRecentAudits(prev => ({
+        ...prev,
+        [video.id]: { loading: false, data }
+      }));
+    } catch (e: any) {
+      console.error(e);
+      setRecentAudits(prev => ({
+        ...prev,
+        [video.id]: { loading: false, error: e.message || "Failed to complete audit" }
+      }));
+    }
+  };
+
+  const saveAuditExplanationToKnowledgeDNA = async (videoId: string, explanation: string) => {
+    if (!user) {
+      alert("Please sign in to save data.");
+      return;
+    }
+
+    try {
+      setSaveStatus(prev => ({ ...prev, [`dna-${videoId}`]: 'saving' }));
+      const currentKg = knowledgeGraph || {
+        niche: "Music & Creative Content",
+        toneOfVoice: "Engaging & Viral",
+        keyAudiences: [],
+        topPerformanceFactors: [],
+        mainThemes: [],
+        recommendedHashtags: [],
+        suggestedHooks: []
+      };
+
+      const updatedKg: KnowledgeGraph = {
+        ...currentKg,
+        topPerformanceFactors: Array.from(new Set([...currentKg.topPerformanceFactors, "Intelligent Audit Tuning", "Mindstorm Optimization"])),
+        mainThemes: Array.from(new Set([...currentKg.mainThemes, "Platform Wide Viral Logic"])),
+        suggestedHooks: Array.from(new Set([...currentKg.suggestedHooks, `Strategic Shift: ${explanation.slice(0, 100)}...`]))
+      };
+
+      await setDoc(doc(db, "knowledge_graphs", user.uid), updatedKg);
+      setKnowledgeGraph(updatedKg);
+      setSaveStatus(prev => ({ ...prev, [`dna-${videoId}`]: 'saved' }));
+      setTimeout(() => {
+        setSaveStatus(prev => ({ ...prev, [`dna-${videoId}`]: '' }));
+      }, 3000);
+    } catch (e) {
+      console.error(e);
+      setSaveStatus(prev => ({ ...prev, [`dna-${videoId}`]: 'error' }));
+    }
+  };
+
+  const saveAuditToSeoVault = async (videoId: string, title: string, description: string, hashtags: string, keywords: string) => {
+    if (!user) {
+      alert("Please sign in to save packages.");
+      return;
+    }
+
+    try {
+      setSaveStatus(prev => ({ ...prev, [`vault-${videoId}`]: 'saving' }));
+      
+      const seoData: SEOPackage = {
+        youtube: { title, description, hashtags },
+        shorts: { title, caption: description.slice(0, 200), hashtags },
+        tiktok: { hook: title, caption: description.slice(0, 150), hashtags },
+        instagram: { caption: description.slice(0, 200), hashtags },
+        facebook: { title, description, hashtags },
+        x: { post: `${title} ${hashtags}`.slice(0, 240), hashtags },
+        keywordBank: keywords
+      };
+
+      const docRef = await addDoc(collection(db, "history"), {
+        uid: user.uid,
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        context: `Viral Catalyst Spark Optimized Upload for Video ID ${videoId}`,
+        seo: seoData,
+        timestamp: new Date()
+      });
+
+      setVault(prev => [{
+        id: docRef.id,
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        context: `Viral Catalyst Spark Optimized Upload for Video ID ${videoId}`,
+        seo: seoData,
+        timestamp: new Date()
+      }, ...prev]);
+
+      setSaveStatus(prev => ({ ...prev, [`vault-${videoId}`]: 'saved' }));
+      setTimeout(() => {
+        setSaveStatus(prev => ({ ...prev, [`vault-${videoId}`]: '' }));
+      }, 3000);
+    } catch (e) {
+      console.error(e);
+      setSaveStatus(prev => ({ ...prev, [`vault-${videoId}`]: 'error' }));
+    }
+  };
+
   // Listen to Auth State
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
@@ -134,9 +285,30 @@ export default function App() {
 
   const fetchPersistedData = async (uid: string) => {
     try {
+      // 0. Fetch User Profile Cache (YouTube channel & videos)
+      try {
+        const userDoc = await getDoc(doc(db, "users", uid));
+        if (userDoc && userDoc.exists()) {
+          const userData = userDoc.data();
+          if (userData.channelData) {
+            setChannel(userData.channelData);
+          }
+          if (userData.videosData) {
+            setVideos(userData.videosData);
+          }
+        }
+      } catch (e) {
+        console.error("Failed to load cached user details:", e);
+      }
+
       // 1. Fetch Knowledge Graph
-      const kgDoc = await getDoc(doc(db, "knowledge_graphs", uid));
-      if (kgDoc.exists()) {
+      let kgDoc;
+      try {
+        kgDoc = await getDoc(doc(db, "knowledge_graphs", uid));
+      } catch (e) {
+        handleFirestoreError(e, OperationType.GET, `knowledge_graphs/${uid}`);
+      }
+      if (kgDoc && kgDoc.exists()) {
         setKnowledgeGraph(kgDoc.data() as KnowledgeGraph);
       }
 
@@ -148,12 +320,19 @@ export default function App() {
         orderBy("timestamp", "desc"),
         limit(20)
       );
-      const snap = await getDocs(q);
-      const items: VaultItem[] = [];
-      snap.forEach((d) => {
-        items.push({ id: d.id, ...d.data() } as VaultItem);
-      });
-      setVault(items);
+      let snap;
+      try {
+        snap = await getDocs(q);
+      } catch (e) {
+        handleFirestoreError(e, OperationType.GET, 'history');
+      }
+      if (snap) {
+        const items: VaultItem[] = [];
+        snap.forEach((d) => {
+          items.push({ id: d.id, ...d.data() } as VaultItem);
+        });
+        setVault(items);
+      }
       setVaultLoading(false);
     } catch (e) {
       console.error("Error fetching persisted user data:", e);
@@ -163,6 +342,7 @@ export default function App() {
 
   const handleGoogleSignIn = async () => {
     setAuthLoading(true);
+    setYoutubeError(null);
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
@@ -173,8 +353,9 @@ export default function App() {
         // Sync channel stats and videos
         await syncYouTubeAccount(token, result.user.uid);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Sign-in error:", error);
+      setYoutubeError(error.message || "Sign-in was cancelled or failed.");
       alert("Google Sign-In failed or was cancelled.");
     } finally {
       setAuthLoading(false);
@@ -183,26 +364,40 @@ export default function App() {
 
   const syncYouTubeAccount = async (token: string, uid: string) => {
     setYoutubeLoading(true);
+    setYoutubeError(null);
     try {
       const channelData = await fetchYouTubeChannel(token);
       setChannel(channelData);
 
-      // Save user profile info to Firestore
-      await setDoc(doc(db, "users", uid), {
-        uid,
-        channelId: channelData.id,
-        channelTitle: channelData.title,
-        avatar: channelData.avatar,
-        lastSynced: new Date().toISOString()
-      }, { merge: true });
-
+      let videoList: YouTubeVideo[] = [];
       if (channelData.uploadsPlaylistId) {
-        const videoList = await fetchYouTubeVideos(token, channelData.uploadsPlaylistId);
-        setVideos(videoList);
+        try {
+          videoList = await fetchYouTubeVideos(token, channelData.uploadsPlaylistId);
+          setVideos(videoList);
+        } catch (vidErr: any) {
+          console.warn("Could not load recent videos during sync:", vidErr);
+          // Don't fail the whole sync if only the uploads list fails to load
+        }
       }
-    } catch (e) {
+
+      // Save user profile info AND synced data cache to Firestore
+      try {
+        await setDoc(doc(db, "users", uid), {
+          uid,
+          channelId: channelData.id,
+          channelTitle: channelData.title,
+          avatar: channelData.avatar,
+          lastSynced: new Date().toISOString(),
+          channelData,
+          videosData: videoList
+        }, { merge: true });
+      } catch (e) {
+        handleFirestoreError(e, OperationType.WRITE, `users/${uid}`);
+      }
+    } catch (e: any) {
       console.error("YouTube sync error:", e);
-      alert("Failed to sync YouTube channel statistics. Continuing as a general account.");
+      setYoutubeError(e.message || String(e));
+      alert("Failed to sync YouTube channel statistics. Check out the 'Real-time Insights' tab for troubleshooting instructions.");
     } finally {
       setYoutubeLoading(false);
     }
@@ -222,7 +417,11 @@ export default function App() {
       setKnowledgeGraph(graph);
 
       // Persist in Firestore
-      await setDoc(doc(db, "knowledge_graphs", user.uid), graph);
+      try {
+        await setDoc(doc(db, "knowledge_graphs", user.uid), graph);
+      } catch (e) {
+        handleFirestoreError(e, OperationType.WRITE, `knowledge_graphs/${user.uid}`);
+      }
     } catch (e) {
       console.error(e);
       alert("Failed to compile user content DNA profile.");
@@ -230,6 +429,40 @@ export default function App() {
       setKgLoading(false);
     }
   };
+
+  const handleFetchTrends = async () => {
+    if (!trendQuery) return;
+    setTrendLoading(true);
+    try {
+      const data = await generateTrendDashboardData(trendQuery);
+      setTrendData(data);
+    } catch (e) {
+      console.error("Trends analysis failure:", e);
+    } finally {
+      setTrendLoading(false);
+    }
+  };
+
+  const handlePredictEngagement = async () => {
+    if (!candidateTitle) return;
+    setPredicting(true);
+    try {
+      const data = await predictVideoEngagement(candidateTitle, thumbnailConcept);
+      setPrediction(data);
+    } catch (e) {
+      console.error("Engagement simulation failure:", e);
+      alert("Failed to run predictive engagement analysis.");
+    } finally {
+      setPredicting(false);
+    }
+  };
+
+  // Auto-fetch trends when the insights/analytics tab opens
+  useEffect(() => {
+    if (activeTab === 'analytics' && !trendData) {
+      handleFetchTrends();
+    }
+  }, [activeTab]);
 
   const handleGenerate = async () => {
     if (!url || !context) return;
@@ -240,22 +473,29 @@ export default function App() {
 
       // Persist in history if user is authenticated
       if (user) {
-        const docRef = await addDoc(collection(db, "history"), {
-          uid: user.uid,
-          url,
-          context,
-          seo: data,
-          timestamp: new Date()
-        });
+        let docRef;
+        try {
+          docRef = await addDoc(collection(db, "history"), {
+            uid: user.uid,
+            url,
+            context,
+            seo: data,
+            timestamp: new Date()
+          });
+        } catch (e) {
+          handleFirestoreError(e, OperationType.CREATE, "history");
+        }
 
-        // Add to active Vault state
-        setVault(prev => [{
-          id: docRef.id,
-          url,
-          context,
-          seo: data,
-          timestamp: new Date()
-        }, ...prev]);
+        if (docRef) {
+          // Add to active Vault state
+          setVault(prev => [{
+            id: docRef.id,
+            url,
+            context,
+            seo: data,
+            timestamp: new Date()
+          }, ...prev]);
+        }
       }
     } catch (error) {
       console.error(error);
@@ -569,12 +809,47 @@ export default function App() {
                 exit={{ opacity: 0, y: -15 }}
                 className="space-y-8"
               >
-                <div>
-                  <h2 className="text-2xl font-display font-black text-white uppercase tracking-tight">Real-Time Channel Insights</h2>
-                  <p className="text-xs text-slate-400">Deep, accurate metric evaluation direct from your linked YouTube Creator profile.</p>
+                {/* Header Section */}
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/5 pb-6">
+                  <div>
+                    <h2 className="text-2xl font-display font-black text-white uppercase tracking-tight">Real-Time Channel Insights</h2>
+                    <p className="text-xs text-slate-400">Deep, accurate metric evaluation and growth tools direct from your workspace.</p>
+                  </div>
+                  
+                  {/* Troubleshooting connection guidance when there are auth errors */}
+                  {youtubeError && (
+                    <div className="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-2.5 rounded-xl text-xs flex items-center space-x-2 max-w-md">
+                      <span className="font-bold">⚠️ Connection Alert:</span>
+                      <span className="truncate">{youtubeError}</span>
+                    </div>
+                  )}
                 </div>
 
-                {channel ? (
+                {/* Sub-tab Switcher Menu */}
+                <div className="flex border-b border-white/5 p-1 bg-black/40 rounded-2xl max-w-md">
+                  <button
+                    onClick={() => setAnalyticsSubTab('audit')}
+                    className={`flex-1 py-2.5 rounded-xl text-center text-xs font-display font-bold uppercase tracking-wider transition-all ${analyticsSubTab === 'audit' ? 'bg-gold text-black shadow-lg shadow-gold/10' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    My Channel Audit
+                  </button>
+                  <button
+                    onClick={() => setAnalyticsSubTab('trends')}
+                    className={`flex-1 py-2.5 rounded-xl text-center text-xs font-display font-bold uppercase tracking-wider transition-all ${analyticsSubTab === 'trends' ? 'bg-cyan text-black shadow-lg shadow-cyan/10' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    Trend Dashboard
+                  </button>
+                  <button
+                    onClick={() => setAnalyticsSubTab('engagement')}
+                    className={`flex-1 py-2.5 rounded-xl text-center text-xs font-display font-bold uppercase tracking-wider transition-all ${analyticsSubTab === 'engagement' ? 'bg-mag text-white shadow-lg shadow-mag/10' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    Engagement Simulator
+                  </button>
+                </div>
+
+                {analyticsSubTab === 'audit' && (
+                  <>
+                    {channel ? (
                   <div className="space-y-8">
                     {/* Stats overview */}
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -607,6 +882,459 @@ export default function App() {
                           <BarChart2 size={48} />
                         </div>
                       </div>
+                    </div>
+
+                    {/* Elite 3-Upload Catalyst Engine */}
+                    <div className="space-y-6">
+                      <div className="border-b border-white/10 pb-4">
+                        <div className="flex items-center space-x-3">
+                          <div className="p-2.5 bg-gradient-to-r from-gold/20 to-cyan/20 rounded-xl border border-gold/30">
+                            <Zap className="text-gold animate-pulse" size={24} />
+                          </div>
+                          <div>
+                            <h3 className="font-display text-lg font-black text-white uppercase tracking-tight">
+                              🚀 Elite Turbo Social Discovery Audit & Catalyst
+                            </h3>
+                            <p className="text-xs text-slate-400">
+                              Powered by Mindstorm™ technology. Crunches real-time metadata of your latest 3 uploads to recommend high-converting algorithmic adjustments.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {videos.length === 0 ? (
+                        <div className="glass rounded-3xl p-8 text-center text-slate-500 text-xs">
+                          No uploaded videos found in this channel to audit.
+                        </div>
+                      ) : (
+                        <div className="space-y-8">
+                          {videos.slice(0, 3).map((video, index) => {
+                            const isMetadataExpanded = expandedMetadataVideoId === video.id;
+                            const isAuditExpanded = expandedAuditVideoId === video.id;
+                            const isExplanationExpanded = expandedExplanationVideoId === video.id;
+                            const auditState = recentAudits[video.id] || { loading: false };
+
+                            const currentHashtags = extractCurrentHashtags(video.description, video.title);
+                            const currentKeywords = extractCurrentKeywords(video.description, video.title);
+
+                            return (
+                              <div 
+                                key={`catalyst-${video.id}`}
+                                className="glass rounded-3xl border border-white/5 bg-gradient-to-b from-white/[0.02] to-transparent p-6 space-y-6 relative overflow-hidden shadow-2xl"
+                              >
+                                {/* Badge and header */}
+                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                                  <div className="flex items-center space-x-3">
+                                    <span className="px-3 py-1 bg-gold/10 text-gold border border-gold/20 rounded-full text-[10px] font-mono uppercase tracking-wider">
+                                      Upload #{index + 1}
+                                    </span>
+                                    <h4 className="text-sm font-bold text-white tracking-tight">{video.title}</h4>
+                                  </div>
+                                  <div className="flex items-center space-x-4 text-xs font-mono text-slate-400">
+                                    <span className="flex items-center space-x-1">
+                                      <TrendingUp size={14} className="text-cyan" />
+                                      <span>{video.viewCount.toLocaleString()} Views</span>
+                                    </span>
+                                    <span className="text-slate-600">|</span>
+                                    <span>Uploaded: {new Date(video.publishedAt).toLocaleDateString()}</span>
+                                  </div>
+                                </div>
+
+                                {/* Thumbnail Container (Large/Clear on Mobile) */}
+                                <div className="space-y-2">
+                                  <div className="text-[10px] font-mono uppercase tracking-wider text-slate-500">
+                                    Current Thumbnail Visual Check
+                                  </div>
+                                  <div className="relative aspect-video w-full rounded-2xl overflow-hidden border border-white/10 group shadow-lg">
+                                    <img 
+                                      src={video.thumbnail.replace("mqdefault", "maxresdefault")} 
+                                      onError={(e) => {
+                                        // fallback if maxresdefault doesn't exist
+                                        (e.target as HTMLImageElement).src = video.thumbnail;
+                                      }}
+                                      alt={video.title} 
+                                      className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                                    />
+                                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent flex items-end p-4">
+                                      <div className="text-xs text-white/90 font-mono truncate max-w-full">
+                                        ID: {video.id}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Double Drawer Expansion Buttons */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                                  <button
+                                    onClick={() => {
+                                      setExpandedMetadataVideoId(isMetadataExpanded ? null : video.id);
+                                      setExpandedAuditVideoId(null);
+                                    }}
+                                    className={`flex items-center justify-center space-x-2 px-5 py-3 rounded-xl font-display text-xs font-bold uppercase tracking-wider border transition-all ${
+                                      isMetadataExpanded 
+                                        ? 'bg-white/10 border-white/20 text-white' 
+                                        : 'bg-black/40 border-white/5 hover:border-white/10 text-slate-300'
+                                    }`}
+                                  >
+                                    <span>📂 {isMetadataExpanded ? 'Close' : 'Inspect'} Current Metadata Columns</span>
+                                  </button>
+
+                                  <button
+                                    onClick={() => {
+                                      setExpandedAuditVideoId(isAuditExpanded ? null : video.id);
+                                      setExpandedMetadataVideoId(null);
+                                    }}
+                                    className={`flex items-center justify-center space-x-2 px-5 py-3 rounded-xl font-display text-xs font-bold uppercase tracking-wider border transition-all ${
+                                      isAuditExpanded 
+                                        ? 'bg-gold/10 border-gold/30 text-gold shadow-lg shadow-gold/5' 
+                                        : 'bg-gradient-to-r from-gold/10 to-cyan/10 border-gold/20 hover:border-gold/30 text-gold'
+                                    }`}
+                                  >
+                                    <Zap size={14} className="animate-bounce" />
+                                    <span>⚡ {isAuditExpanded ? 'Close' : 'Ignite'} Elite AI Catalyst Spark</span>
+                                  </button>
+                                </div>
+
+                                {/* A. Expandable Current Metadata Columns */}
+                                <AnimatePresence>
+                                  {isMetadataExpanded && (
+                                    <motion.div
+                                      initial={{ opacity: 0, height: 0 }}
+                                      animate={{ opacity: 1, height: 'auto' }}
+                                      exit={{ opacity: 0, height: 0 }}
+                                      className="overflow-hidden"
+                                    >
+                                      <div className="bg-black/40 border border-white/5 rounded-2xl p-5 space-y-4">
+                                        <div className="text-xs font-display font-bold text-slate-400 uppercase tracking-widest border-b border-white/5 pb-2">
+                                          Current Metadata Columns Breakdown
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                          {/* Title Column */}
+                                          <div className="bg-white/[0.02] border border-white/5 p-4 rounded-xl flex flex-col justify-between">
+                                            <div>
+                                              <div className="text-[10px] font-mono text-slate-400 uppercase mb-2">Video Title</div>
+                                              <p className="text-xs text-white leading-relaxed font-semibold break-words">{video.title}</p>
+                                            </div>
+                                            <button 
+                                              onClick={() => {
+                                                navigator.clipboard.writeText(video.title);
+                                                setSaveStatus(prev => ({ ...prev, [`copy-curr-title-${video.id}`]: 'copied' }));
+                                                setTimeout(() => setSaveStatus(prev => ({ ...prev, [`copy-curr-title-${video.id}`]: '' })), 2000);
+                                              }}
+                                              className="mt-4 py-1.5 px-3 bg-white/5 hover:bg-white/10 rounded-lg text-[10px] font-mono text-slate-300 flex items-center justify-center space-x-1 transition-all"
+                                            >
+                                              {saveStatus[`copy-curr-title-${video.id}`] === 'copied' ? <Check size={12} /> : <Copy size={12} />}
+                                              <span>{saveStatus[`copy-curr-title-${video.id}`] === 'copied' ? 'Copied' : 'Copy Title'}</span>
+                                            </button>
+                                          </div>
+
+                                          {/* Description Column */}
+                                          <div className="bg-white/[0.02] border border-white/5 p-4 rounded-xl flex flex-col justify-between">
+                                            <div>
+                                              <div className="text-[10px] font-mono text-slate-400 uppercase mb-2">Video Description</div>
+                                              <p className="text-xs text-slate-300 leading-relaxed max-h-32 overflow-y-auto break-words whitespace-pre-wrap font-mono">
+                                                {video.description || 'No description found.'}
+                                              </p>
+                                            </div>
+                                            <button 
+                                              onClick={() => {
+                                                navigator.clipboard.writeText(video.description || "");
+                                                setSaveStatus(prev => ({ ...prev, [`copy-curr-desc-${video.id}`]: 'copied' }));
+                                                setTimeout(() => setSaveStatus(prev => ({ ...prev, [`copy-curr-desc-${video.id}`]: '' })), 2000);
+                                              }}
+                                              className="mt-4 py-1.5 px-3 bg-white/5 hover:bg-white/10 rounded-lg text-[10px] font-mono text-slate-300 flex items-center justify-center space-x-1 transition-all"
+                                            >
+                                              {saveStatus[`copy-curr-desc-${video.id}`] === 'copied' ? <Check size={12} /> : <Copy size={12} />}
+                                              <span>{saveStatus[`copy-curr-desc-${video.id}`] === 'copied' ? 'Copied' : 'Copy Description'}</span>
+                                            </button>
+                                          </div>
+
+                                          {/* Hashtags Column */}
+                                          <div className="bg-white/[0.02] border border-white/5 p-4 rounded-xl flex flex-col justify-between">
+                                            <div>
+                                              <div className="text-[10px] font-mono text-slate-400 uppercase mb-2">High-Value Hashtags</div>
+                                              <p className="text-xs text-cyan font-mono leading-relaxed break-words">{currentHashtags}</p>
+                                            </div>
+                                            <button 
+                                              onClick={() => {
+                                                navigator.clipboard.writeText(currentHashtags);
+                                                setSaveStatus(prev => ({ ...prev, [`copy-curr-hash-${video.id}`]: 'copied' }));
+                                                setTimeout(() => setSaveStatus(prev => ({ ...prev, [`copy-curr-hash-${video.id}`]: '' })), 2000);
+                                              }}
+                                              className="mt-4 py-1.5 px-3 bg-white/5 hover:bg-white/10 rounded-lg text-[10px] font-mono text-slate-300 flex items-center justify-center space-x-1 transition-all"
+                                            >
+                                              {saveStatus[`copy-curr-hash-${video.id}`] === 'copied' ? <Check size={12} /> : <Copy size={12} />}
+                                              <span>{saveStatus[`copy-curr-hash-${video.id}`] === 'copied' ? 'Copied' : 'Copy Hashtags'}</span>
+                                            </button>
+                                          </div>
+
+                                          {/* Keywords Column */}
+                                          <div className="bg-white/[0.02] border border-white/5 p-4 rounded-xl flex flex-col justify-between">
+                                            <div>
+                                              <div className="text-[10px] font-mono text-slate-400 uppercase mb-2">Targeted Keywords</div>
+                                              <p className="text-xs text-gold font-mono leading-relaxed break-words">{currentKeywords}</p>
+                                            </div>
+                                            <button 
+                                              onClick={() => {
+                                                navigator.clipboard.writeText(currentKeywords);
+                                                setSaveStatus(prev => ({ ...prev, [`copy-curr-key-${video.id}`]: 'copied' }));
+                                                setTimeout(() => setSaveStatus(prev => ({ ...prev, [`copy-curr-key-${video.id}`]: '' })), 2000);
+                                              }}
+                                              className="mt-4 py-1.5 px-3 bg-white/5 hover:bg-white/10 rounded-lg text-[10px] font-mono text-slate-300 flex items-center justify-center space-x-1 transition-all"
+                                            >
+                                              {saveStatus[`copy-curr-key-${video.id}`] === 'copied' ? <Check size={12} /> : <Copy size={12} />}
+                                              <span>{saveStatus[`copy-curr-key-${video.id}`] === 'copied' ? 'Copied' : 'Copy Keywords'}</span>
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </motion.div>
+                                  )}
+                                </AnimatePresence>
+
+                                {/* B. Expandable Turbo AI Catalyst Spark */}
+                                <AnimatePresence>
+                                  {isAuditExpanded && (
+                                    <motion.div
+                                      initial={{ opacity: 0, height: 0 }}
+                                      animate={{ opacity: 1, height: 'auto' }}
+                                      exit={{ opacity: 0, height: 0 }}
+                                      className="overflow-hidden"
+                                    >
+                                      <div className="bg-black/50 border border-gold/15 rounded-2xl p-5 space-y-6">
+                                        {!auditState.data && !auditState.loading && (
+                                          <div className="text-center py-6 space-y-4">
+                                            <div className="p-3 bg-gold/5 border border-gold/20 rounded-full w-14 h-14 flex items-center justify-center mx-auto">
+                                              <Zap className="text-gold" size={24} />
+                                            </div>
+                                            <div>
+                                              <h5 className="font-display text-sm font-bold text-white uppercase tracking-wider">Unleash Catalyst Audit Engine</h5>
+                                              <p className="text-[11px] text-slate-400 mt-1 max-w-md mx-auto">
+                                                Crunches existing meta structures against deep platform trends, viral hook models, and audience responses to build an elite, primed SEO metadata package.
+                                              </p>
+                                            </div>
+                                            <button
+                                              onClick={() => runRecentVideoAudit(video)}
+                                              className="px-6 py-2.5 bg-gradient-to-r from-gold to-yellow-500 hover:from-gold/90 hover:to-yellow-500/90 text-black font-display text-xs font-bold uppercase tracking-wider rounded-xl transition-all shadow-lg hover:shadow-gold/20"
+                                            >
+                                              Start Mindstorm™ Audit
+                                            </button>
+                                          </div>
+                                        )}
+
+                                        {auditState.loading && (
+                                          <div className="text-center py-10 space-y-4">
+                                            <Loader2 className="animate-spin text-gold mx-auto" size={32} />
+                                            <div>
+                                              <div className="font-display text-xs font-bold text-white uppercase tracking-widest animate-pulse">
+                                                Spinning with Viral Catalyst
+                                              </div>
+                                              <p className="text-[10px] text-slate-400 mt-1">
+                                                Applying highly advanced computing & logic core program...
+                                              </p>
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {auditState.error && (
+                                          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 text-center">
+                                            <p className="text-xs text-red-400 font-mono">{auditState.error}</p>
+                                            <button
+                                              onClick={() => runRecentVideoAudit(video)}
+                                              className="mt-3 text-xs text-white hover:underline uppercase font-bold"
+                                            >
+                                              Retry Audit
+                                            </button>
+                                          </div>
+                                        )}
+
+                                        {auditState.data && (
+                                          <div className="space-y-6">
+                                            {/* Score Board */}
+                                            <div className="p-5 bg-gradient-to-r from-gold/[0.03] to-cyan/[0.03] border border-gold/20 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                              <div>
+                                                <div className="flex items-center space-x-2">
+                                                  <span className="text-xs text-slate-400 font-mono uppercase">Social Performance Audit Score</span>
+                                                  <span className="text-[10px] font-mono text-slate-500">(1 is Absolute Best, 10 is Immediate Need)</span>
+                                                </div>
+                                                <div className="flex items-baseline space-x-3 mt-1.5">
+                                                  <div className="text-2xl font-display font-black text-white">
+                                                    New Score: <span className="text-gold">{auditState.data.optimizedScore}/10</span>
+                                                  </div>
+                                                  <div className="text-xs font-bold text-green-400 bg-green-400/10 px-2.5 py-1 rounded-full border border-green-400/20">
+                                                    +{auditState.data.scoreChange} improvement
+                                                  </div>
+                                                </div>
+                                                <p className="text-[10px] text-slate-400 mt-1">
+                                                  Original evaluation score was <span className="text-red-400 font-bold">{auditState.data.originalScore}/10</span>. Algorithmic enhancements have boosted the distribution rank.
+                                                </p>
+                                              </div>
+                                              <div className="px-4 py-2 bg-black/40 border border-white/5 rounded-lg flex items-center space-x-2">
+                                                <Sparkles size={14} className="text-gold" />
+                                                <span className="text-[10px] font-mono text-gold uppercase tracking-wider">VIRAL CATALYST PRIMED</span>
+                                              </div>
+                                            </div>
+
+                                            {/* Reconstructed columns */}
+                                            <div className="space-y-2">
+                                              <div className="text-xs font-display font-bold text-gold uppercase tracking-wider">
+                                                Reconstructed Primed SEO Metadata Package
+                                              </div>
+                                              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                                {/* Title Column */}
+                                                <div className="bg-black/30 border border-gold/10 p-4 rounded-xl flex flex-col justify-between">
+                                                  <div>
+                                                    <div className="text-[10px] font-mono text-gold uppercase mb-2">Optimized Title</div>
+                                                    <p className="text-xs text-white leading-relaxed font-bold break-words">
+                                                      {auditState.data.optimizedMetadata.title}
+                                                    </p>
+                                                  </div>
+                                                  <button 
+                                                    onClick={() => {
+                                                      navigator.clipboard.writeText(auditState.data!.optimizedMetadata.title);
+                                                      setSaveStatus(prev => ({ ...prev, [`copy-opt-title-${video.id}`]: 'copied' }));
+                                                      setTimeout(() => setSaveStatus(prev => ({ ...prev, [`copy-opt-title-${video.id}`]: '' })), 2000);
+                                                    }}
+                                                    className="mt-4 py-1.5 px-3 bg-gold/10 hover:bg-gold/20 border border-gold/20 rounded-lg text-[10px] font-mono text-gold flex items-center justify-center space-x-1 transition-all"
+                                                  >
+                                                    {saveStatus[`copy-opt-title-${video.id}`] === 'copied' ? <Check size={12} /> : <Copy size={12} />}
+                                                    <span>{saveStatus[`copy-opt-title-${video.id}`] === 'copied' ? 'Copied' : 'Copy Title'}</span>
+                                                  </button>
+                                                </div>
+
+                                                {/* Description Column */}
+                                                <div className="bg-black/30 border border-gold/10 p-4 rounded-xl flex flex-col justify-between">
+                                                  <div>
+                                                    <div className="text-[10px] font-mono text-gold uppercase mb-2">Optimized Description</div>
+                                                    <p className="text-xs text-slate-300 leading-relaxed max-h-32 overflow-y-auto break-words font-mono">
+                                                      {auditState.data.optimizedMetadata.description}
+                                                    </p>
+                                                  </div>
+                                                  <button 
+                                                    onClick={() => {
+                                                      navigator.clipboard.writeText(auditState.data!.optimizedMetadata.description);
+                                                      setSaveStatus(prev => ({ ...prev, [`copy-opt-desc-${video.id}`]: 'copied' }));
+                                                      setTimeout(() => setSaveStatus(prev => ({ ...prev, [`copy-opt-desc-${video.id}`]: '' })), 2000);
+                                                    }}
+                                                    className="mt-4 py-1.5 px-3 bg-gold/10 hover:bg-gold/20 border border-gold/20 rounded-lg text-[10px] font-mono text-gold flex items-center justify-center space-x-1 transition-all"
+                                                  >
+                                                    {saveStatus[`copy-opt-desc-${video.id}`] === 'copied' ? <Check size={12} /> : <Copy size={12} />}
+                                                    <span>{saveStatus[`copy-opt-desc-${video.id}`] === 'copied' ? 'Copied' : 'Copy Description'}</span>
+                                                  </button>
+                                                </div>
+
+                                                {/* Hashtags Column */}
+                                                <div className="bg-black/30 border border-gold/10 p-4 rounded-xl flex flex-col justify-between">
+                                                  <div>
+                                                    <div className="text-[10px] font-mono text-gold uppercase mb-2">Optimized Hashtags</div>
+                                                    <p className="text-xs text-cyan font-mono leading-relaxed break-words">
+                                                      {auditState.data.optimizedMetadata.hashtags}
+                                                    </p>
+                                                  </div>
+                                                  <button 
+                                                    onClick={() => {
+                                                      navigator.clipboard.writeText(auditState.data!.optimizedMetadata.hashtags);
+                                                      setSaveStatus(prev => ({ ...prev, [`copy-opt-hash-${video.id}`]: 'copied' }));
+                                                      setTimeout(() => setSaveStatus(prev => ({ ...prev, [`copy-opt-hash-${video.id}`]: '' })), 2000);
+                                                    }}
+                                                    className="mt-4 py-1.5 px-3 bg-gold/10 hover:bg-gold/20 border border-gold/20 rounded-lg text-[10px] font-mono text-gold flex items-center justify-center space-x-1 transition-all"
+                                                  >
+                                                    {saveStatus[`copy-opt-hash-${video.id}`] === 'copied' ? <Check size={12} /> : <Copy size={12} />}
+                                                    <span>{saveStatus[`copy-opt-hash-${video.id}`] === 'copied' ? 'Copied' : 'Copy Hashtags'}</span>
+                                                  </button>
+                                                </div>
+
+                                                {/* Keywords Column */}
+                                                <div className="bg-black/30 border border-gold/10 p-4 rounded-xl flex flex-col justify-between">
+                                                  <div>
+                                                    <div className="text-[10px] font-mono text-gold uppercase mb-2">Optimized Keywords</div>
+                                                    <p className="text-xs text-gold font-mono leading-relaxed break-words font-semibold">
+                                                      {auditState.data.optimizedMetadata.keywords}
+                                                    </p>
+                                                  </div>
+                                                  <button 
+                                                    onClick={() => {
+                                                      navigator.clipboard.writeText(auditState.data!.optimizedMetadata.keywords);
+                                                      setSaveStatus(prev => ({ ...prev, [`copy-opt-key-${video.id}`]: 'copied' }));
+                                                      setTimeout(() => setSaveStatus(prev => ({ ...prev, [`copy-opt-key-${video.id}`]: '' })), 2000);
+                                                    }}
+                                                    className="mt-4 py-1.5 px-3 bg-gold/10 hover:bg-gold/20 border border-gold/20 rounded-lg text-[10px] font-mono text-gold flex items-center justify-center space-x-1 transition-all"
+                                                  >
+                                                    {saveStatus[`copy-opt-key-${video.id}`] === 'copied' ? <Check size={12} /> : <Copy size={12} />}
+                                                    <span>{saveStatus[`copy-opt-key-${video.id}`] === 'copied' ? 'Copied' : 'Copy Keywords'}</span>
+                                                  </button>
+                                                </div>
+                                              </div>
+                                            </div>
+
+                                            {/* Expandable Explanation & Persistence */}
+                                            <div className="space-y-3 pt-2">
+                                              <button
+                                                onClick={() => setExpandedExplanationVideoId(isExplanationExpanded ? null : video.id)}
+                                                className="w-full text-left py-2 px-4 bg-white/[0.03] border border-white/5 rounded-xl text-xs font-display font-medium text-slate-300 flex items-center justify-between hover:bg-white/[0.05] transition-colors"
+                                              >
+                                                <span>📋 Why these algorithmic changes? (Forecasted Niche Analysis)</span>
+                                                <ChevronRight size={14} className={`transform transition-transform ${isExplanationExpanded ? 'rotate-90' : ''}`} />
+                                              </button>
+
+                                              {isExplanationExpanded && (
+                                                <motion.div
+                                                  initial={{ opacity: 0, height: 0 }}
+                                                  animate={{ opacity: 1, height: 'auto' }}
+                                                  exit={{ opacity: 0, height: 0 }}
+                                                  className="overflow-hidden bg-black/30 border border-white/5 p-5 rounded-xl space-y-4"
+                                                >
+                                                  <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap font-sans">
+                                                    {auditState.data.explanation}
+                                                  </p>
+                                                  
+                                                  <div className="flex flex-wrap gap-3 pt-2">
+                                                    <button
+                                                      onClick={() => saveAuditExplanationToKnowledgeDNA(video.id, auditState.data!.explanation)}
+                                                      disabled={saveStatus[`dna-${video.id}`] === 'saving'}
+                                                      className="flex items-center space-x-1 px-4 py-2 bg-cyan/15 hover:bg-cyan/25 border border-cyan/30 rounded-lg text-[10px] font-mono text-cyan uppercase tracking-wider transition-all disabled:opacity-50"
+                                                    >
+                                                      <Database size={12} />
+                                                      <span>
+                                                        {saveStatus[`dna-${video.id}`] === 'saving' ? 'Syncing...' : 
+                                                         saveStatus[`dna-${video.id}`] === 'saved' ? 'DNA Profile Updated' : 
+                                                         'Save Strategy to Knowledge DNA'}
+                                                      </span>
+                                                    </button>
+
+                                                    <button
+                                                      onClick={() => saveAuditToSeoVault(
+                                                        video.id,
+                                                        auditState.data!.optimizedMetadata.title,
+                                                        auditState.data!.optimizedMetadata.description,
+                                                        auditState.data!.optimizedMetadata.hashtags,
+                                                        auditState.data!.optimizedMetadata.keywords
+                                                      )}
+                                                      disabled={saveStatus[`vault-${video.id}`] === 'saving'}
+                                                      className="flex items-center space-x-1 px-4 py-2 bg-gold/15 hover:bg-gold/25 border border-gold/30 rounded-lg text-[10px] font-mono text-gold uppercase tracking-wider transition-all disabled:opacity-50"
+                                                    >
+                                                      <History size={12} />
+                                                      <span>
+                                                        {saveStatus[`vault-${video.id}`] === 'saving' ? 'Storing...' : 
+                                                         saveStatus[`vault-${video.id}`] === 'saved' ? 'Saved to SEO Vault' : 
+                                                         'Save Package to SEO Vault'}
+                                                      </span>
+                                                    </button>
+                                                  </div>
+                                                </motion.div>
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </motion.div>
+                                  )}
+                                </AnimatePresence>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
 
                     {/* Videos list */}
@@ -648,6 +1376,20 @@ export default function App() {
                     <p className="text-xs text-slate-400 leading-relaxed">
                       Syncing your active Creator profile enables immediate analysis of your uploads, automatic visual previews, and unlocks real-time metric-based grounding.
                     </p>
+                    
+                    {/* Troubleshooting Setup Details / Fix Alert */}
+                    <div className="bg-white/5 border border-white/10 p-5 rounded-2xl text-left space-y-3 max-w-md mx-auto">
+                      <div className="text-[11px] font-mono text-gold uppercase tracking-wider font-bold">🚨 Setup Instructions & Fix Alert:</div>
+                      <p className="text-[10px] text-slate-300 leading-relaxed">
+                        If you experience errors connecting, please perform the following checks:
+                      </p>
+                      <ul className="list-disc pl-4 space-y-1 text-[10px] text-slate-400 font-sans">
+                        <li>Ensure <span className="text-white font-semibold">YouTube Data API v3</span> is enabled in your Google Cloud Project.</li>
+                        <li>When the Google Sign-in popup appears, <span className="text-gold font-semibold">you MUST check the box</span> to grant "View your YouTube account" permissions.</li>
+                        <li>The Google Account you use must have an <span className="text-white font-semibold">active, created YouTube Channel</span>.</li>
+                      </ul>
+                    </div>
+
                     <button 
                       onClick={handleGoogleSignIn}
                       className="bg-red-600 hover:bg-red-500 text-white font-display font-bold px-8 py-3.5 rounded-xl uppercase tracking-wider text-xs mx-auto shadow-lg hover:shadow-red-600/30 transition-all flex items-center space-x-2"
@@ -655,6 +1397,362 @@ export default function App() {
                       <Youtube size={16} fill="currentColor" />
                       <span>Authenticate Creator Access</span>
                     </button>
+                  </div>
+                )}
+                  </>
+                )}
+
+                {/* SUB TAB 2: Trend Dashboard */}
+                {analyticsSubTab === 'trends' && (
+                  <div className="space-y-6">
+                    <div className="glass rounded-3xl p-6 md:p-8 space-y-6 relative overflow-hidden">
+                      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-cyan to-transparent opacity-50" />
+                      
+                      <div className="max-w-2xl">
+                        <h3 className="text-lg font-display font-black text-white uppercase tracking-tight">AI Trend Intelligence Forecast</h3>
+                        <p className="text-xs text-slate-400 mt-1">Search any creator keyword, niche, or topic to forecast current velocity, key psychological momentum, and viral title models.</p>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <div className="flex-1 relative">
+                          <Search className="absolute left-4 top-3.5 text-slate-500" size={18} />
+                          <input 
+                            type="text"
+                            value={trendQuery}
+                            onChange={(e) => setTrendQuery(e.target.value)}
+                            placeholder="e.g. lofi hip hop, ASMR baking, tech reviews..."
+                            className="w-full bg-black/40 border border-white/10 rounded-xl pl-12 pr-4 py-3.5 text-sm focus:border-cyan/50 outline-none transition-all text-white"
+                          />
+                        </div>
+                        <button
+                          onClick={handleFetchTrends}
+                          disabled={trendLoading || !trendQuery}
+                          className="px-6 py-3.5 bg-cyan hover:bg-cyan/90 text-black font-display font-black rounded-xl text-xs uppercase tracking-wider transition-all disabled:opacity-50 flex items-center justify-center space-x-2"
+                        >
+                          {trendLoading ? <Loader2 className="animate-spin" size={16} /> : <Search size={16} />}
+                          <span>{trendLoading ? 'Crunching Velocity...' : 'Analyze Niche'}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {trendLoading && (
+                      <div className="glass rounded-3xl p-16 text-center space-y-4">
+                        <Loader2 className="animate-spin text-cyan mx-auto" size={36} />
+                        <p className="text-xs font-mono text-cyan uppercase tracking-widest animate-pulse">Scanning Social Graph Networks...</p>
+                        <p className="text-[10px] text-slate-500">Retrieving real-time topic volume indices, psychological trigger points, and viral hook formulas...</p>
+                      </div>
+                    )}
+
+                    {!trendLoading && trendData && (
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        {/* Column 1 & 2: Main Velocity & Suggested Topics */}
+                        <div className="lg:col-span-2 space-y-6">
+                          {/* Hot topics with momentum */}
+                          <div className="glass rounded-3xl p-6 space-y-4">
+                            <h4 className="text-xs font-mono text-cyan uppercase tracking-widest">Trending Niche Segments</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {trendData.hotTopics.map((topicItem, index) => (
+                                <div key={index} className="bg-black/30 border border-white/5 p-4 rounded-2xl space-y-3 hover:border-cyan/30 transition-all">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-xs font-bold text-white truncate max-w-[150px]">{topicItem.topic}</span>
+                                    <span className={`px-2 py-0.5 rounded text-[9px] font-mono uppercase font-bold ${
+                                      topicItem.momentum === 'up' 
+                                        ? 'bg-green-500/10 text-green-400 border border-green-500/20' 
+                                        : topicItem.momentum === 'stable' 
+                                        ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' 
+                                        : 'bg-red-500/10 text-red-400 border border-red-500/20'
+                                    }`}>
+                                      {topicItem.momentum === 'up' ? '↗ High' : topicItem.momentum === 'stable' ? '→ Stable' : '↘ Cooling'}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-baseline justify-between">
+                                    <span className="text-[10px] text-slate-500 font-mono">Forecast Volume</span>
+                                    <span className="text-xs font-mono text-slate-300">{topicItem.searchVolume}</span>
+                                  </div>
+                                  <p className="text-[10px] text-slate-400 leading-relaxed border-t border-white/5 pt-2 font-sans">
+                                    {topicItem.explanation}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Hook structures & engagement triggers */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="glass rounded-3xl p-6 space-y-4">
+                              <h4 className="text-xs font-mono text-cyan uppercase tracking-widest">Psychological Triggers</h4>
+                              <div className="space-y-3">
+                                {trendData.engagementTriggers.map((trigger, idx) => (
+                                  <div key={idx} className="flex items-start space-x-2.5 text-xs bg-black/40 p-3 rounded-xl border border-white/5">
+                                    <div className="p-1 bg-cyan/15 rounded-md text-cyan mt-0.5">
+                                      <TrendingUp size={12} />
+                                    </div>
+                                    <p className="text-slate-300 leading-relaxed">{trigger}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div className="glass rounded-3xl p-6 space-y-4">
+                              <h4 className="text-xs font-mono text-cyan uppercase tracking-widest">Viral Hook Templates</h4>
+                              <div className="space-y-3">
+                                {trendData.viralHooks.map((hook, idx) => (
+                                  <div 
+                                    key={idx} 
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(hook);
+                                      setSaveStatus(prev => ({ ...prev, [`copy-hook-${idx}`]: 'copied' }));
+                                      setTimeout(() => setSaveStatus(prev => ({ ...prev, [`copy-hook-${idx}`]: '' })), 2000);
+                                    }}
+                                    className="p-3 bg-black/40 hover:bg-black/60 rounded-xl border border-white/5 cursor-pointer flex items-center justify-between text-xs italic text-slate-300 transition-colors group"
+                                  >
+                                    <span className="truncate pr-4 group-hover:text-cyan transition-colors">"{hook}"</span>
+                                    <button className="text-[10px] text-slate-500 font-mono flex-shrink-0">
+                                      {saveStatus[`copy-hook-${idx}`] === 'copied' ? 'Copied' : 'Copy'}
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Column 3: Recommended Niche Titles */}
+                        <div className="space-y-6">
+                          <div className="glass rounded-3xl p-6 space-y-4 relative overflow-hidden">
+                            <div className="text-xs font-mono text-cyan uppercase tracking-widest">AI Generated Hot Titles</div>
+                            <p className="text-[11px] text-slate-400">These titles are modeled after premium organic reach algorithms. Click any title to copy and load it into the Engagement Simulator.</p>
+                            
+                            <div className="space-y-3">
+                              {trendData.suggestedNicheTitles.map((title, idx) => (
+                                <div 
+                                  key={idx}
+                                  onClick={() => {
+                                    setCandidateTitle(title);
+                                    setAnalyticsSubTab('engagement');
+                                    setPrediction(null);
+                                    navigator.clipboard.writeText(title);
+                                  }}
+                                  className="p-3 bg-black/30 hover:bg-cyan/10 border border-white/5 hover:border-cyan/30 rounded-xl text-xs font-bold text-white cursor-pointer transition-all flex items-center justify-between group"
+                                >
+                                  <span className="truncate pr-2 group-hover:text-cyan transition-colors">{title}</span>
+                                  <ArrowRight size={14} className="text-slate-500 group-hover:text-cyan transform group-hover:translate-x-1 transition-all" />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* SUB TAB 3: Video Engagement Simulator */}
+                {analyticsSubTab === 'engagement' && (
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                      {/* Left: Simulation Control Form */}
+                      <div className="lg:col-span-1 space-y-6">
+                        <div className="glass rounded-3xl p-6 md:p-8 space-y-6 relative overflow-hidden">
+                          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-mag to-transparent opacity-50" />
+                          
+                          <div>
+                            <h3 className="text-lg font-display font-black text-white uppercase tracking-tight">Algorithmic Simulator</h3>
+                            <p className="text-xs text-slate-400 mt-1">Simulate click propensity and watch-time retention scores BEFORE publishing.</p>
+                          </div>
+
+                          <div className="space-y-4">
+                            <div className="space-y-2">
+                              <label className="block text-[10px] font-mono text-slate-400 uppercase">Draft Video Title</label>
+                              <input 
+                                type="text"
+                                value={candidateTitle}
+                                onChange={(e) => setCandidateTitle(e.target.value)}
+                                placeholder="Paste your draft title here..."
+                                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-xs focus:border-mag/50 outline-none transition-all text-white font-bold"
+                              />
+                            </div>
+
+                            <div className="space-y-2">
+                              <label className="block text-[10px] font-mono text-slate-400 uppercase">Thumbnail Concept / Visuals</label>
+                              <textarea 
+                                value={thumbnailConcept}
+                                onChange={(e) => setThumbnailConcept(e.target.value)}
+                                rows={4}
+                                placeholder="Describe the imagery, text overlay, background color, and emotion in the thumbnail..."
+                                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-xs focus:border-mag/50 outline-none transition-all text-slate-300 resize-none font-mono"
+                              />
+                            </div>
+
+                            <button
+                              onClick={handlePredictEngagement}
+                              disabled={predicting || !candidateTitle}
+                              className="w-full mt-2 py-3.5 bg-gradient-to-r from-mag to-pink-600 hover:from-mag hover:to-mag text-white font-display font-black rounded-xl text-xs uppercase tracking-wider transition-all disabled:opacity-50 flex items-center justify-center space-x-2"
+                            >
+                              {predicting ? (
+                                <>
+                                  <Loader2 className="animate-spin" size={16} />
+                                  <span>Simulating Metrics...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Zap size={16} fill="currentColor" />
+                                  <span>Run Simulator</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Right: Simulation Output */}
+                      <div className="lg:col-span-2">
+                        {predicting && (
+                          <div className="glass rounded-3xl p-16 text-center space-y-4 h-full flex flex-col justify-center items-center">
+                            <Loader2 className="animate-spin text-mag" size={40} />
+                            <p className="text-xs font-mono text-mag uppercase tracking-widest animate-pulse">Analyzing Title Word Weights...</p>
+                            <p className="text-[10px] text-slate-500 max-w-sm">Comparing descriptive imagery descriptors, emotional density, cognitive dissonance level, and thumbnail alignments...</p>
+                          </div>
+                        )}
+
+                        {!predicting && !prediction && (
+                          <div className="glass rounded-3xl p-16 text-center space-y-6 h-full flex flex-col justify-center items-center">
+                            <div className="p-4 bg-mag/5 border border-mag/20 rounded-full text-mag">
+                              <BarChart2 size={32} />
+                            </div>
+                            <div className="space-y-2">
+                              <h4 className="text-sm font-display font-bold text-white uppercase tracking-wider">Simulator Dashboard Ready</h4>
+                              <p className="text-xs text-slate-400 max-w-md mx-auto">
+                                Feed your draft title and a brief description of your planned thumbnail into the controller on the left, and let Gemini audit its performance vectors!
+                              </p>
+                            </div>
+                          </div>
+                        )}
+
+                        {!predicting && prediction && (
+                          <div className="space-y-6">
+                            {/* Score Gages */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                              {/* CTR Card */}
+                              <div className="glass rounded-3xl p-6 relative overflow-hidden text-center space-y-2">
+                                <div className="text-[10px] font-mono text-slate-400 uppercase">Estimated CTR Index</div>
+                                <div className="text-4xl font-display font-black text-white">
+                                  {prediction.ctrScore}%
+                                </div>
+                                <div className="w-full bg-black/40 h-1.5 rounded-full overflow-hidden mt-2">
+                                  <div 
+                                    className={`h-full rounded-full ${
+                                      prediction.ctrScore >= 80 ? 'bg-green-400' : prediction.ctrScore >= 50 ? 'bg-amber-400' : 'bg-red-400'
+                                    }`}
+                                    style={{ width: `${prediction.ctrScore}%` }}
+                                  />
+                                </div>
+                                <p className="text-[9px] text-slate-500">How likely users are to click based on curiosity weight.</p>
+                              </div>
+
+                              {/* Retention Card */}
+                              <div className="glass rounded-3xl p-6 relative overflow-hidden text-center space-y-2">
+                                <div className="text-[10px] font-mono text-slate-400 uppercase">Retention Alignment</div>
+                                <div className="text-4xl font-display font-black text-white">
+                                  {prediction.retentionScore}%
+                                </div>
+                                <div className="w-full bg-black/40 h-1.5 rounded-full overflow-hidden mt-2">
+                                  <div 
+                                    className={`h-full rounded-full ${
+                                      prediction.retentionScore >= 80 ? 'bg-green-400' : prediction.retentionScore >= 50 ? 'bg-amber-400' : 'bg-red-400'
+                                    }`}
+                                    style={{ width: `${prediction.retentionScore}%` }}
+                                  />
+                                </div>
+                                <p className="text-[9px] text-slate-500">Calculates title-thumbnail consistency rating.</p>
+                              </div>
+
+                              {/* Virality Card */}
+                              <div className="glass rounded-3xl p-6 relative overflow-hidden text-center space-y-2">
+                                <div className="text-[10px] font-mono text-slate-400 uppercase">Virality Index</div>
+                                <div className="text-4xl font-display font-black text-white">
+                                  {prediction.viralityIndex}%
+                                </div>
+                                <div className="w-full bg-black/40 h-1.5 rounded-full overflow-hidden mt-2">
+                                  <div 
+                                    className={`h-full rounded-full ${
+                                      prediction.viralityIndex >= 80 ? 'bg-green-400' : prediction.viralityIndex >= 50 ? 'bg-amber-400' : 'bg-red-400'
+                                    }`}
+                                    style={{ width: `${prediction.viralityIndex}%` }}
+                                  />
+                                </div>
+                                <p className="text-[9px] text-slate-500">Calculates visual/textual shares propensity.</p>
+                              </div>
+                            </div>
+
+                            {/* Algorithmic Review Critique */}
+                            <div className="glass rounded-3xl p-6 space-y-4">
+                              <h4 className="text-xs font-mono text-mag uppercase tracking-widest">Algorithmic Mindstorm™ Audit</h4>
+                              <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap font-sans">
+                                {prediction.critique}
+                              </p>
+                            </div>
+
+                            {/* Optimized Title recommendations & alternative copy buttons */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                              <div className="glass rounded-3xl p-6 space-y-4">
+                                <h4 className="text-xs font-mono text-mag uppercase tracking-widest">Optimized Alternative Title</h4>
+                                <div className="p-4 bg-black/40 border border-white/5 rounded-2xl space-y-4">
+                                  <p className="text-xs font-bold text-white">{prediction.optimizedTitle}</p>
+                                  <div className="flex gap-2">
+                                    <button 
+                                      onClick={() => {
+                                        navigator.clipboard.writeText(prediction.optimizedTitle);
+                                        setSaveStatus(prev => ({ ...prev, 'copy-opt-pred': 'copied' }));
+                                        setTimeout(() => setSaveStatus(prev => ({ ...prev, 'copy-opt-pred': '' })), 2000);
+                                      }}
+                                      className="py-1.5 px-3 bg-mag/10 hover:bg-mag/20 border border-mag/20 rounded-lg text-[10px] font-mono text-mag flex items-center justify-center space-x-1 transition-all"
+                                    >
+                                      {saveStatus['copy-opt-pred'] === 'copied' ? <Check size={12} /> : <Copy size={12} />}
+                                      <span>{saveStatus['copy-opt-pred'] === 'copied' ? 'Copied' : 'Copy'}</span>
+                                    </button>
+
+                                    <button 
+                                      onClick={() => {
+                                        setUrl('');
+                                        setContext(`Original Optimized Title: ${prediction.optimizedTitle}\nGrounding Style: High engagement viral distribution.`);
+                                        setActiveTab('engine');
+                                      }}
+                                      className="py-1.5 px-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[10px] font-mono text-slate-300 flex items-center justify-center space-x-1 transition-all"
+                                    >
+                                      <Zap size={12} />
+                                      <span>Load into AI Engine</span>
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="glass rounded-3xl p-6 space-y-4">
+                                <h4 className="text-xs font-mono text-mag uppercase tracking-widest">Retention Hook Models</h4>
+                                <div className="space-y-2">
+                                  {prediction.recommendedHooks.map((hook, index) => (
+                                    <div 
+                                      key={index}
+                                      onClick={() => {
+                                        navigator.clipboard.writeText(hook);
+                                        setSaveStatus(prev => ({ ...prev, [`copy-hook-pred-${index}`]: 'copied' }));
+                                        setTimeout(() => setSaveStatus(prev => ({ ...prev, [`copy-hook-pred-${index}`]: '' })), 2000);
+                                      }}
+                                      className="p-2.5 bg-black/40 hover:bg-black/60 rounded-xl border border-white/5 text-[11px] italic text-slate-300 transition-all flex items-center justify-between cursor-pointer group"
+                                    >
+                                      <span className="truncate pr-2 font-mono group-hover:text-mag">"{hook}"</span>
+                                      <span className="text-[9px] font-mono text-slate-500">
+                                        {saveStatus[`copy-hook-pred-${index}`] === 'copied' ? 'Copied' : 'Copy'}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
               </motion.div>

@@ -30,12 +30,21 @@ export const fetchYouTubeChannel = async (accessToken: string): Promise<YouTubeC
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to fetch channel details: ${response.statusText}`);
+    let errMsg = response.statusText;
+    try {
+      const errData = await response.json();
+      if (errData?.error?.message) {
+        errMsg = errData.error.message;
+      }
+    } catch (e) {
+      // ignore
+    }
+    throw new Error(`Failed to fetch channel details: ${errMsg} (Status: ${response.status})`);
   }
 
   const data = await response.json();
   if (!data.items || data.items.length === 0) {
-    throw new Error("No YouTube channel found for this user.");
+    throw new Error("No YouTube channel found for this user. Please ensure your Google Account has an active YouTube channel.");
   }
 
   const item = data.items[0];
@@ -61,7 +70,16 @@ export const fetchYouTubeVideos = async (accessToken: string, uploadsPlaylistId:
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to fetch channel videos: ${response.statusText}`);
+    let errMsg = response.statusText;
+    try {
+      const errData = await response.json();
+      if (errData?.error?.message) {
+        errMsg = errData.error.message;
+      }
+    } catch (e) {
+      // ignore
+    }
+    throw new Error(`Failed to fetch channel videos: ${errMsg} (Status: ${response.status})`);
   }
 
   const playlistData = await response.json();
@@ -79,7 +97,16 @@ export const fetchYouTubeVideos = async (accessToken: string, uploadsPlaylistId:
   });
 
   if (!videosResponse.ok) {
-    throw new Error(`Failed to fetch video statistics: ${videosResponse.statusText}`);
+    let errMsg = videosResponse.statusText;
+    try {
+      const errData = await videosResponse.json();
+      if (errData?.error?.message) {
+        errMsg = errData.error.message;
+      }
+    } catch (e) {
+      // ignore
+    }
+    throw new Error(`Failed to fetch video statistics: ${errMsg} (Status: ${videosResponse.status})`);
   }
 
   const videosData = await videosResponse.json();
